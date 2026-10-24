@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radar de Oportunidades</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1a1d21; --muted:#6b7280; --line:#e5e7eb;
+    --accent:#2563eb; --chip:#eef2ff; --chip-ink:#3730a3;
+    --s-hi:#16a34a; --s-mid:#d97706; --s-lo:#9ca3af;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0f1115; --card:#171a21; --ink:#e7e9ee; --muted:#9aa3b2; --line:#272b34;
+      --accent:#60a5fa; --chip:#1e2740; --chip-ink:#a5b4fc;
+      --s-hi:#4ade80; --s-mid:#fbbf24; --s-lo:#6b7280;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  header{padding:20px 16px 8px;max-width:1000px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 2px}
+  .sub{color:var(--muted);font-size:13px}
+  .bar{max-width:1000px;margin:12px auto;padding:0 16px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input,select{background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:8px 10px;font-size:14px}
+  input[type=search]{flex:1;min-width:180px}
+  .wrap{max-width:1000px;margin:0 auto 40px;padding:0 16px;display:flex;flex-direction:column;gap:10px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+  .title{font-weight:600;font-size:16px;margin:0;text-decoration:none;color:var(--ink)}
+  .title:hover{color:var(--accent);text-decoration:underline}
+  .score{flex:none;font-weight:700;font-size:15px;border-radius:8px;padding:3px 9px;color:#fff}
+  .meta{color:var(--muted);font-size:13px;margin:6px 0 2px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .chip{background:var(--chip);color:var(--chip-ink);border-radius:999px;padding:2px 9px;font-size:12px;font-weight:600}
+  .motivo{font-size:14px;margin:6px 0}
+  .pitch{font-size:13.5px;color:var(--muted);border-left:3px solid var(--line);padding-left:10px;margin:8px 0 0;white-space:pre-wrap}
+  .empty{text-align:center;color:var(--muted);padding:50px 10px}
+  footer{max-width:1000px;margin:0 auto 30px;padding:0 16px;color:var(--muted);font-size:12px}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Radar de Oportunidades</h1>
+  <div class="sub" id="sub">Cargando…</div>
+</header>
+
+<div class="bar">
+  <input type="search" id="q" placeholder="Buscar título, empresa, motivo…">
+  <select id="fTipo"><option value="">Todo tipo</option><option value="freelance">Freelance</option><option value="empleo">Empleo</option></select>
+  <select id="fFuente"><option value="">Toda fuente</option></select>
+  <select id="fScore">
+    <option value="0">Score ≥ 0</option>
+    <option value="6" selected>Score ≥ 6</option>
+    <option value="8">Score ≥ 8</option>
+  </select>
+  <select id="sort">
+    <option value="score">Mejor score</option>
+    <option value="fecha">Más reciente</option>
+  </select>
+</div>
+
+<div class="wrap" id="list"></div>
+<footer id="foot"></footer>
+
+<script>
+const CSV_URL = './data/leads.csv';
+let ROWS = [];
+
+function parseCSV(text){
+  const rows=[]; let i=0, field='', row=[], q=false;
+  while(i<text.length){
+    const c=text[i];
+    if(q){
+      if(c==='"'){ if(text[i+1]==='"'){field+='"';i+=2;continue;} q=false;i++;continue; }
+      field+=c;i++;continue;
+    }
+    if(c==='"'){q=true;i++;continue;}
+    if(c===','){row.push(field);field='';i++;continue;}
+    if(c==='\r'){i++;continue;}
+    if(c==='\n'){row.push(field);rows.push(row);row=[];field='';i++;continue;}
+    field+=c;i++;
+  }
+  if(field.length||row.length){row.push(field);rows.push(row);}
+  return rows;
+}
+
+function scoreColor(s){ return s>=8?'var(--s-hi)':s>=6?'var(--s-mid)':'var(--s-lo)'; }
+function esc(s){ return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function render(){
+  const q=document.getElementById('q').value.toLowerCase().trim();
+  const ft=document.getElementById('fTipo').value;
+  const ff=document.getElementById('fFuente').value;
+  const fs=+document.getElementById('fScore').value;
+  const sort=document.getElementById('sort').value;
+
+  let out=ROWS.filter(r=>{
+    if(ft&&r.tipo!==ft) return false;
+    if(ff&&r.fuente!==ff) return false;
+    if((+r.score||0)<fs) return false;
+    if(q){
+      const blob=(r.titulo+' '+r.empresa+' '+r.motivo+' '+r.fuente).toLowerCase();
+      if(!blob.includes(q)) return false;
+    }
+    return true;
+  });
+  out.sort((a,b)=> sort==='score' ? (+b.score||0)-(+a.score||0) : (b.fecha_detectado||'').localeCompare(a.fecha_detectado||''));
+
+  const list=document.getElementById('list');
+  if(!out.length){ list.innerHTML='<div class="empty">Sin resultados con estos filtros.</div>'; return; }
+  list.innerHTML=out.map(r=>{
+    const sc=+r.score||0;
+    const emp=r.empresa?` · ${esc(r.empresa)}`:'';
+    const pres=r.presupuesto?`<span class="chip">💰 ${esc(r.presupuesto)}</span>`:'';
+    const titulo=r.url?`<a class="title" href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.titulo)}</a>`:`<span class="title">${esc(r.titulo)}</span>`;
+    return `<div class="card">
+      <div class="top">${titulo}<span class="score" style="background:${scoreColor(sc)}">${sc}/10</span></div>
+      <div class="meta"><span class="chip">${esc(r.tipo)}</span><span>${esc(r.fuente)}${emp}</span>${pres}<span>${esc(r.fecha_detectado)}</span></div>
+      ${r.motivo?`<div class="motivo">${esc(r.motivo)}</div>`:''}
+      ${r.pitch?`<div class="pitch">✍️ ${esc(r.pitch)}</div>`:''}
+    </div>`;
+  }).join('');
+  document.getElementById('foot').textContent=`Mostrando ${out.length} de ${ROWS.length} oportunidades · motor de IA entre paréntesis en el CSV`;
+}
+
+fetch(CSV_URL).then(r=>{ if(!r.ok) throw new Error(r.status); return r.text(); }).then(text=>{
+  const rows=parseCSV(text).filter(r=>r.length>1);
+  if(!rows.length){ document.getElementById('sub').textContent='Aún no hay datos. El radar los llenará en su próxima corrida.'; return; }
+  const head=rows[0];
+  ROWS=rows.slice(1).map(r=>{ const o={}; head.forEach((h,i)=>o[h.trim()]=r[i]||''); return o; });
+
+  const fuentes=[...new Set(ROWS.map(r=>r.fuente))].filter(Boolean).sort();
+  const sel=document.getElementById('fFuente');
+  fuentes.forEach(f=>{ const o=document.createElement('option'); o.value=f;o.textContent=f; sel.appendChild(o); });
+
+  document.getElementById('sub').textContent=`${ROWS.length} oportunidades detectadas`;
+  ['q','fTipo','fFuente','fScore','sort'].forEach(id=>{
+    const el=document.getElementById(id);
+    el.addEventListener(id==='q'?'input':'change',render);
+  });
+  render();
+}).catch(e=>{
+  document.getElementById('sub').textContent='No pude leer data/leads.csv todavía (¿ya corrió el radar al menos una vez?).';
+});
+</script>
+</body>
+</html>
