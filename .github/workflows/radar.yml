@@ -44,5 +44,7 @@ jobs:
             echo "Sin cambios que guardar."
           else
             git commit -m "radar: $(date -u +'%Y-%m-%d %H:%M UTC')"
-            git push
+            # El repo remoto puede haber avanzado (Pages, otra corrida): reintegrar antes de empujar.
+            git pull --rebase --autostash origin main || true
+            git push origin HEAD:main
           fi

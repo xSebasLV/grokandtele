@@ -30,7 +30,7 @@ SCORE_GUARDAR  = 6   # se guarda en el CSV si score >= esto
 SCORE_AVISAR   = 8   # se avisa por Telegram si score >= esto
 
 # Modelos (todos gratis, formato OpenAI). Cambia si los nombres rotan.
-GROQ_MODEL = 'llama-3.3-70b-versatile'
+GROQ_MODEL = 'openai/gpt-oss-20b'   # gratis en Groq. Alt mejor calidad: 'openai/gpt-oss-120b'
 NIM_MODEL  = 'meta/llama-3.3-70b-instruct'
 GLM_MODEL  = 'glm-4.7-flash'
 
@@ -318,8 +318,11 @@ def main():
 
     for j in nuevos:
         res = calificar(j)
-        nuevas_urls.append(j['url'])  # marcar como visto aunque no pase el filtro
         time.sleep(0.4)               # respira entre llamadas
+        # Solo marcar como visto si la IA realmente lo evaluo.
+        # Si no hubo motor (outage total), se deja para reintentar en la proxima corrida.
+        if res['motor'] != 'ninguno':
+            nuevas_urls.append(j['url'])
         if res['score'] < SCORE_GUARDAR: continue
         lead = {**j, **res, 'fecha_detectado':ahora, 'estado':'nuevo'}
         filas.append(lead)
