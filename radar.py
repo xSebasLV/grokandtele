@@ -30,7 +30,7 @@ SCORE_GUARDAR  = 6   # se guarda en el CSV si score >= esto
 SCORE_AVISAR   = 8   # se avisa por Telegram si score >= esto
 
 # Modelos (todos gratis, formato OpenAI). Cambia si los nombres rotan.
-GROQ_MODEL = 'openai/gpt-oss-20b'   # gratis en Groq. Alt mejor calidad: 'openai/gpt-oss-120b'
+GROQ_MODEL = 'openai/gpt-oss-120b'   # gratis en Groq, mejor calidad. Alt mas rapido: 'openai/gpt-oss-20b'
 NIM_MODEL  = 'meta/llama-3.3-70b-instruct'
 GLM_MODEL  = 'glm-4.7-flash'
 
