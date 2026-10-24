@@ -27,20 +27,36 @@ KEYWORDS = [
 ]
 
 SCORE_GUARDAR  = 6   # se guarda en el CSV si score >= esto
-SCORE_AVISAR   = 8   # se avisa por Telegram si score >= esto
+SCORE_AVISAR   = 6   # se avisa por Telegram si score >= esto (subelo si te llega mucho)
 
-# Modelos (todos gratis, formato OpenAI). Cambia si los nombres rotan.
-GROQ_MODEL = 'openai/gpt-oss-120b'   # gratis en Groq, mejor calidad. Alt mas rapido: 'openai/gpt-oss-20b'
-NIM_MODEL  = 'meta/llama-3.3-70b-instruct'
-GLM_MODEL  = 'glm-4.7-flash'
+# Cuantos leads calificar por corrida. Evita reventar los limites por minuto de la IA.
+# Los que sobran NO se marcan vistos: se procesan en la siguiente corrida (cada 2h).
+MAX_POR_CORRIDA = 40
+PAUSA_IA_S      = 1.5   # pausa entre llamadas a la IA
 
 # Keys desde entorno
 GROQ_API_KEY     = os.environ.get('GROQ_API_KEY', '')
-NVIDIA_API_KEY   = os.environ.get('NVIDIA_API_KEY', '')
+GEMINI_API_KEY   = os.environ.get('GEMINI_API_KEY', '')
 GLM_API_KEY      = os.environ.get('GLM_API_KEY', '')
+NVIDIA_API_KEY   = os.environ.get('NVIDIA_API_KEY', '')
 TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 FREELANCER_TOKEN = os.environ.get('FREELANCER_TOKEN', '')
+
+# Cadena de IA: se intenta en orden. El 1ro con key que responda gana.
+# Si uno se satura (rate limit), se desactiva por esta corrida y se pasa al siguiente.
+# Todos gratis y formato OpenAI, menos Gemini (formato propio, kind='gemini').
+PROVIDERS = [
+    {'name':'groq',   'kind':'openai', 'key':GROQ_API_KEY,   'model':'openai/gpt-oss-20b',
+     'url':'https://api.groq.com/openai/v1/chat/completions'},
+    {'name':'gemini', 'kind':'gemini', 'key':GEMINI_API_KEY, 'model':'gemini-2.0-flash',
+     'url':'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent'},
+    {'name':'glm',    'kind':'openai', 'key':GLM_API_KEY,    'model':'glm-4.7-flash',
+     'url':'https://api.z.ai/api/paas/v4/chat/completions'},
+    {'name':'nim',    'kind':'openai', 'key':NVIDIA_API_KEY, 'model':'meta/llama-3.3-70b-instruct',
+     'url':'https://integrate.api.nvidia.com/v1/chat/completions'},
+]
+AGOTADOS = set()   # proveedores que se saturaron en esta corrida
 
 UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
 
@@ -51,14 +67,21 @@ DATA_DIR.mkdir(exist_ok=True)
 
 SYSTEM = (
     "Eres el filtro de oportunidades de Impulsate / PCMarkett (Bogota, Colombia). "
-    "El usuario busca tanto proyectos freelance como un posible segundo empleo remoto. "
-    "Perfil/servicios: desarrollo web (WordPress, Elementor, PHP, Laravel), sistemas de "
-    "informacion a medida (inventarios, CRM, ERP), analisis de datos y dashboards (Power BI, "
-    "DAX, SQL, MySQL), automatizacion (n8n), SEO y marketing digital. NO: apps moviles nativas, "
-    "blockchain, ML pesado, 3D, redaccion pura, diseno grafico puro. Devuelve SOLO un objeto JSON "
-    "valido (sin markdown) con llaves: score (entero 0-10 de match real con el perfil), "
-    "motivo (string max 20 palabras en espanol), pitch (2 frases en el idioma del anuncio, "
-    "apertura de propuesta o mensaje personalizado que mencione algo concreto del anuncio)."
+    "El usuario busca proyectos freelance y un posible segundo empleo remoto. "
+    "PERFIL: desarrollo web (WordPress, Elementor, PHP, Laravel), sistemas de informacion a medida "
+    "(inventarios, CRM, ERP), analisis de datos y dashboards (Power BI, DAX, SQL, MySQL, Python), "
+    "automatizacion (n8n, APIs, scraping), SEO y marketing digital.\n"
+    "RUBRICA de score (0-10):\n"
+    "9-10: pide exactamente un servicio core (dashboard/Power BI, web WordPress/PHP/Laravel, "
+    "sistema a medida, automatizacion n8n, analisis de datos).\n"
+    "7-8: claramente dentro del area aunque no nombre la herramienta exacta (analisis/visualizacion "
+    "de datos en general, SQL, desarrollo web o backend, integraciones, ETL).\n"
+    "5-6: relacionado o tangencial (TI general, soporte de datos, automatizacion ligera, WordPress basico).\n"
+    "0-4: fuera del perfil (apps moviles nativas, blockchain, ML pesado, 3D, redaccion pura, diseno grafico puro).\n"
+    "Ante la duda entre dos niveles, elige el mas alto si menciona datos, dashboards, web o automatizacion. "
+    "Devuelve SOLO un objeto JSON valido (sin markdown) con llaves: "
+    "score (entero 0-10), motivo (string max 20 palabras en espanol), "
+    "pitch (2 frases en el idioma del anuncio, apertura personalizada que mencione algo concreto del anuncio)."
 )
 
 # ============================================================
@@ -246,45 +269,75 @@ def recolectar(seen):
     return out
 
 # ============================================================
-#  CALIFICADOR  (Groq -> NIM -> GLM)
+#  CALIFICADOR  (cadena de proveedores con failover por saturacion)
 # ============================================================
 def user_msg(j):
     return (f"TIPO: {j['tipo']}\nFUENTE: {j['fuente']}\nTITULO: {j['titulo']}\n"
             f"PRESUPUESTO: {j.get('presupuesto') or 'no dice'}\nDESCRIPCION: {j['descripcion']}")
 
 def parse_score(txt):
-    c = (txt or '').replace('```json','').replace('```','').strip()
+    c = (txt or '').replace('```json','').replace('```','')
+    m = re.search(r'\{.*\}', c, re.S)   # extrae el primer objeto JSON aunque venga con texto extra
+    if m: c = m.group(0)
     p = json.loads(c)
-    return {'score':int(p.get('score',0) or 0),'motivo':p.get('motivo','') or '','pitch':p.get('pitch','') or ''}
+    sc = int(float(p.get('score', 0) or 0))
+    return {'score':max(0,min(10,sc)),'motivo':(p.get('motivo','') or '')[:160],'pitch':(p.get('pitch','') or '')[:500]}
 
-def _chat(url, key, model, j):
-    r = requests.post(url, headers={'Content-Type':'application/json','Authorization':'Bearer '+key},
-        json={'model':model,'temperature':0.2,'max_tokens':400,
+def _es_rate_limit(e):
+    s = str(e).lower()
+    return '429' in s or 'rate limit' in s or 'quota' in s or 'resource_exhausted' in s
+
+class RateLimit(Exception): pass
+
+def _call_openai(p, j):
+    r = requests.post(p['url'],
+        headers={'Content-Type':'application/json','Authorization':'Bearer '+p['key']},
+        json={'model':p['model'],'temperature':0.2,'max_tokens':600,
+              'response_format':{'type':'json_object'},
               'messages':[{'role':'system','content':SYSTEM},{'role':'user','content':user_msg(j)}]},
-        timeout=40).json()
-    txt = (((r.get('choices') or [{}])[0]).get('message') or {}).get('content')
-    if not txt: raise RuntimeError('sin texto: '+json.dumps(r)[:200])
+        timeout=45)
+    if r.status_code == 429: raise RateLimit('429')
+    data = r.json()
+    if isinstance(data, dict) and data.get('error'):
+        msg = json.dumps(data['error'])
+        if _es_rate_limit(msg): raise RateLimit(msg)
+        raise RuntimeError(msg[:200])
+    txt = (((data.get('choices') or [{}])[0]).get('message') or {}).get('content')
+    if not txt: raise RuntimeError('sin texto')
+    return parse_score(txt)
+
+def _call_gemini(p, j):
+    r = requests.post(p['url'],
+        headers={'Content-Type':'application/json','x-goog-api-key':p['key']},
+        json={'systemInstruction':{'parts':[{'text':SYSTEM}]},
+              'contents':[{'role':'user','parts':[{'text':user_msg(j)}]}],
+              'generationConfig':{'temperature':0.2,'maxOutputTokens':600,'responseMimeType':'application/json'}},
+        timeout=45)
+    if r.status_code == 429: raise RateLimit('429')
+    data = r.json()
+    if isinstance(data, dict) and data.get('error'):
+        msg = json.dumps(data['error'])
+        if _es_rate_limit(msg): raise RateLimit(msg)
+        raise RuntimeError(msg[:200])
+    cand = (data.get('candidates') or [{}])[0]
+    parts = ((cand.get('content') or {}).get('parts') or [{}])
+    txt = parts[0].get('text')
+    if not txt: raise RuntimeError('sin texto')
     return parse_score(txt)
 
 def calificar(j):
-    # 1a opcion: Groq
-    if GROQ_API_KEY:
+    for p in PROVIDERS:
+        if not p['key'] or p['name'] in AGOTADOS:
+            continue
         try:
-            s = _chat('https://api.groq.com/openai/v1/chat/completions', GROQ_API_KEY, GROQ_MODEL, j)
-            s['motor']='groq'; return s
-        except Exception as e: print('Groq fail:', e)
-    # 2a opcion: NVIDIA NIM
-    if NVIDIA_API_KEY:
-        try:
-            s = _chat('https://integrate.api.nvidia.com/v1/chat/completions', NVIDIA_API_KEY, NIM_MODEL, j)
-            s['motor']='nim'; return s
-        except Exception as e: print('NIM fail:', e)
-    # 3a opcion: GLM (z.ai)
-    if GLM_API_KEY:
-        try:
-            s = _chat('https://api.z.ai/api/paas/v4/chat/completions', GLM_API_KEY, GLM_MODEL, j)
-            s['motor']='glm'; return s
-        except Exception as e: print('GLM fail:', e)
+            s = (_call_gemini if p['kind']=='gemini' else _call_openai)(p, j)
+            s['motor'] = p['name']
+            return s
+        except RateLimit as e:
+            print(f"{p['name']} saturado (se desactiva esta corrida): {str(e)[:120]}")
+            AGOTADOS.add(p['name'])
+        except Exception as e:
+            print(f"{p['name']} fail: {str(e)[:150]}")
     return {'score':0,'motivo':'sin motor de IA disponible','pitch':'','motor':'ninguno'}
 
 # ============================================================
@@ -311,16 +364,22 @@ def main():
     nuevos = recolectar(seen)
     print(f"Leads nuevos encontrados: {len(nuevos)}")
 
+    # Tope por corrida: evita reventar los limites por minuto de la IA.
+    # Los que sobran quedan sin marcar -> se procesan en la proxima corrida (cada 2h).
+    por_procesar = nuevos[:MAX_POR_CORRIDA]
+    if len(nuevos) > MAX_POR_CORRIDA:
+        print(f"Procesando {MAX_POR_CORRIDA} este turno; {len(nuevos)-MAX_POR_CORRIDA} quedan para la proxima corrida.")
+
     guardados = 0
     nuevas_urls = []
     filas = []
     ahora = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-5))).strftime('%Y-%m-%d %H:%M')
 
-    for j in nuevos:
+    for j in por_procesar:
         res = calificar(j)
-        time.sleep(0.4)               # respira entre llamadas
+        time.sleep(PAUSA_IA_S)        # respira entre llamadas (cuida limites por minuto)
         # Solo marcar como visto si la IA realmente lo evaluo.
-        # Si no hubo motor (outage total), se deja para reintentar en la proxima corrida.
+        # Si no hubo motor (outage total / todos saturados), se deja para reintentar.
         if res['motor'] != 'ninguno':
             nuevas_urls.append(j['url'])
         if res['score'] < SCORE_GUARDAR: continue
