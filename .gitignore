@@ -1,0 +1,3 @@
+# Archivos de datos: SE VERSIONAN (dedup + leads). No los ignores.
+__pycache__/
+*.pyc

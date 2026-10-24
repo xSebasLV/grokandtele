@@ -1,0 +1,48 @@
+name: Radar Freelance + Empleo
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'      # cada 2 horas (UTC). GitHub puede retrasarlo unos minutos.
+  workflow_dispatch:            # permite correrlo a mano desde la pestaña Actions
+
+permissions:
+  contents: write               # para guardar data/ (dedup + CSV) de vuelta en el repo
+
+concurrency:
+  group: radar
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Correr radar
+        env:
+          GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
+          NVIDIA_API_KEY:   ${{ secrets.NVIDIA_API_KEY }}
+          GLM_API_KEY:      ${{ secrets.GLM_API_KEY }}
+          TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FREELANCER_TOKEN: ${{ secrets.FREELANCER_TOKEN }}
+        run: python radar.py
+
+      - name: Guardar resultados (dedup + CSV)
+        run: |
+          git config user.name  "radar-bot"
+          git config user.email "radar-bot@users.noreply.github.com"
+          git add data/seen.txt data/leads.csv
+          if git diff --staged --quiet; then
+            echo "Sin cambios que guardar."
+          else
+            git commit -m "radar: $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push
+          fi
