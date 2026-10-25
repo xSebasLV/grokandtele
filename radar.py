@@ -26,6 +26,17 @@ KEYWORDS = [
     'automation','automatizacion','n8n','make.com','scraping','sql','looker','tableau','etl',
 ]
 
+# Filtro mas amplio para fuentes FREELANCE (Reddit, HackerNews, Workana), donde los
+# anuncios usan lenguaje libre ("necesito que me construyan un sistema"). La IA hace el
+# filtro fino despues; aqui solo descartamos lo obviamente ajeno.
+GENERIC_DEV = [
+    'develop','desarroll','program','website','web ','web,','web.','pagina','página','sitio',
+    'data','dato','dashboard','excel','sheet','sql','base de datos','database','api','automat',
+    'bot','script','scrap','wordpress','php','python','laravel','javascript','node','software',
+    'sistema','app','aplicaci','integrat','integraci','crm','erp','landing','ecommerce','shopify',
+    'seo','power bi','analytics','analitic','report','scraper',
+]
+
 SCORE_GUARDAR  = 6   # se guarda en el CSV si score >= esto
 SCORE_AVISAR   = 6   # se avisa por Telegram si score >= esto (subelo si te llega mucho)
 
@@ -93,6 +104,10 @@ def clean(s):
 def match_kw(txt):
     t = (txt or '').lower()
     return any(k in t for k in KEYWORDS)
+
+def match_dev(txt):
+    t = (txt or '').lower()
+    return any(k in t for k in GENERIC_DEV)
 
 def get_json(url, headers=None, timeout=25):
     h = {'User-Agent': UA}
@@ -182,45 +197,52 @@ def recolectar(seen):
         except Exception as e: print('WWR:', e)
 
     # 6. Reddit
-    for sub in ['forhire','hiring','jobbit']:
+    # Reddit exige un User-Agent descriptivo y unico, o bloquea desde datacenter (GitHub).
+    reddit_ua = {'User-Agent':'radar-freelance/1.0 (by /u/xSebasLV)'}
+    for sub in ['forhire','jobbit','freelance_forhire','slavelabour']:
         try:
-            r = get_json(f'https://www.reddit.com/r/{sub}/new.json?limit=100')
+            r = get_json(f'https://www.reddit.com/r/{sub}/new.json?limit=100', headers=reddit_ua)
             for p in r.get('data',{}).get('children', []):
                 d = p.get('data', {})
-                if '[hiring]' not in (d.get('title','').lower()): continue
-                if not match_kw(f"{d.get('title','')} {d.get('selftext','')}"): continue
-                push({'tipo':'freelance','fuente':f'Reddit r/{sub}','titulo':d.get('title',''),'empresa':d.get('author',''),
+                titulo = d.get('title','') or ''
+                tl = titulo.lower()
+                # Quedarnos con los que CONTRATAN (no los [for hire] que ofrecen servicio).
+                if '[hiring]' not in tl and '[task]' not in tl: continue
+                blob = f"{titulo} {d.get('selftext','')}"
+                if not match_dev(blob): continue   # filtro amplio; la IA decide el fino
+                push({'tipo':'freelance','fuente':f'Reddit r/{sub}','titulo':titulo,'empresa':d.get('author',''),
                       'descripcion':(d.get('selftext','') or '')[:1200],'presupuesto':'',
                       'url':'https://www.reddit.com'+d.get('permalink','')})
         except Exception as e: print('Reddit', sub, e)
 
     # 7. HackerNews (Who is hiring / Freelancer seeking)
     try:
-        s = get_json('https://hn.algolia.com/api/v1/search?query=Ask%20HN%20hiring%20freelancer&tags=story&hitsPerPage=5')
-        thread = next((h for h in s.get('hits',[]) if re.search('hiring|freelancer', h.get('title','') or '', re.I)), None)
-        if thread:
+        s = get_json('https://hn.algolia.com/api/v1/search?query=freelancer%20seeking%20hiring&tags=story&hitsPerPage=8')
+        threads = [h for h in s.get('hits',[]) if re.search('hiring|freelancer|seeking', h.get('title','') or '', re.I)][:2]
+        for thread in threads:
             item = get_json(f"https://hn.algolia.com/api/v1/items/{thread['objectID']}")
             for c in (item.get('children') or [])[:300]:
                 txt = clean(c.get('text',''))
-                if not txt or not match_kw(txt): continue
+                if not txt or not match_dev(txt): continue
                 push({'tipo':'freelance','fuente':'HackerNews','titulo':txt[:90]+'...','empresa':c.get('author',''),
                       'descripcion':txt[:1200],'presupuesto':'','url':f"https://news.ycombinator.com/item?id={c.get('id')}"})
     except Exception as e: print('HN:', e)
 
-    # 8. Freelancer.com (opcional)
-    if FREELANCER_TOKEN:
-        for kw in ['dashboard','power bi','php','wordpress','data analysis','laravel']:
-            try:
-                r = requests.get('https://www.freelancer.com/api/projects/0.1/projects/active/',
-                    params={'query':kw,'limit':25,'job_details':'true','full_description':'true'},
-                    headers={'freelancer-oauth-v1':FREELANCER_TOKEN,'User-Agent':UA}, timeout=25).json()
-                for p in (r.get('result',{}).get('projects') or []):
-                    b = p.get('budget',{}) or {}
-                    push({'tipo':'freelance','fuente':'Freelancer.com','titulo':p.get('title',''),'empresa':'',
-                          'descripcion':(p.get('description','') or '')[:1200],
-                          'presupuesto':f"{b.get('minimum','?')}-{b.get('maximum','?')} {(p.get('currency') or {}).get('code','')}",
-                          'url':'https://www.freelancer.com/projects/'+(p.get('seo_url',''))})
-            except Exception as e: print('Freelancer:', e)
+    # 8. Freelancer.com  (el endpoint de proyectos activos es PUBLICO; el token solo sube limites)
+    fl_headers = {'User-Agent':UA}
+    if FREELANCER_TOKEN: fl_headers['freelancer-oauth-v1'] = FREELANCER_TOKEN
+    for kw in ['dashboard','power bi','php','wordpress','data analysis','laravel','python','excel']:
+        try:
+            r = requests.get('https://www.freelancer.com/api/projects/0.1/projects/active/',
+                params={'query':kw,'limit':25,'job_details':'true','full_description':'true'},
+                headers=fl_headers, timeout=25).json()
+            for p in (r.get('result',{}).get('projects') or []):
+                b = p.get('budget',{}) or {}
+                push({'tipo':'freelance','fuente':'Freelancer.com','titulo':p.get('title',''),'empresa':'',
+                      'descripcion':(p.get('description','') or '')[:1200],
+                      'presupuesto':f"{b.get('minimum','?')}-{b.get('maximum','?')} {(p.get('currency') or {}).get('code','')}",
+                      'url':'https://www.freelancer.com/projects/'+(p.get('seo_url',''))})
+        except Exception as e: print('Freelancer:', e)
 
     # 9. Torre.co (LatAm)
     for kw in ['desarrollador web','analista de datos','power bi','php','laravel']:
@@ -261,7 +283,7 @@ def recolectar(seen):
                 if not slug or len(slug) < 6 or slug in seen_slug: continue
                 seen_slug.add(slug)
                 t = clean(slug.replace('-', ' '))
-                if not match_kw(t): continue
+                if not match_dev(t): continue
                 push({'tipo':'freelance','fuente':'Workana','titulo':t[:90],'empresa':'',
                       'descripcion':t,'presupuesto':'','url':'https://www.workana.com/job/'+slug})
         except Exception as e: print('Workana:', e)
@@ -364,11 +386,19 @@ def main():
     nuevos = recolectar(seen)
     print(f"Leads nuevos encontrados: {len(nuevos)}")
 
-    # Tope por corrida: evita reventar los limites por minuto de la IA.
+    # Tope por corrida BALANCEADO por categoria: asi el empleo (que llega en masa)
+    # no se come todo el cupo y el freelance nunca se procesa.
     # Los que sobran quedan sin marcar -> se procesan en la proxima corrida (cada 2h).
-    por_procesar = nuevos[:MAX_POR_CORRIDA]
-    if len(nuevos) > MAX_POR_CORRIDA:
-        print(f"Procesando {MAX_POR_CORRIDA} este turno; {len(nuevos)-MAX_POR_CORRIDA} quedan para la proxima corrida.")
+    free = [x for x in nuevos if x['tipo'] == 'freelance']
+    emp  = [x for x in nuevos if x['tipo'] == 'empleo']
+    mitad = MAX_POR_CORRIDA // 2
+    por_procesar = free[:mitad] + emp[:mitad]
+    # Si una categoria trae menos que su mitad, rellenar con la otra hasta el tope.
+    resto = MAX_POR_CORRIDA - len(por_procesar)
+    if resto > 0:
+        por_procesar += free[mitad:mitad+resto] + emp[mitad:mitad+resto]
+    por_procesar = por_procesar[:MAX_POR_CORRIDA]
+    print(f"Encontrados: {len(free)} freelance, {len(emp)} empleo. Procesando {len(por_procesar)} este turno.")
 
     guardados = 0
     nuevas_urls = []
