@@ -154,3 +154,6 @@ https://www.freelancer.com/projects/full-stack-development/Full-Stack-Social-Med
 https://www.freelancer.com/projects/wordpress/Conference-Accommodation-Management
 https://www.freelancer.com/projects/inventory-management/Meesho-Panel-Management-Expert
 https://www.freelancer.com/projects/power-automate/Secure-BYOD-Access-for-Microsoft
+https://www.freelancer.com/projects/laravel/Visitor-Submission-Module
+https://www.freelancer.com/projects/app-development/Experienced-Development-Team-Needed
+https://www.freelancer.com/projects/web-development/Development-Team-Needed-Shipping
