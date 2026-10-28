@@ -202,3 +202,10 @@ https://www.freelancer.com/projects/sip/Remote-FreePBX-PRI-Setup
 https://www.freelancer.com/projects/motor-control/DIY-PCB-Design-for-Motor
 https://www.freelancer.com/projects/embedded-systems/LoRa-Link-Range-Optimization
 https://www.freelancer.com/projects/pitch-deck-writing/Global-Sales-Partner-Analytics-Data
+https://www.freelancer.com/projects/translation/WordPress-Full-Arabic-Localization
+https://www.freelancer.com/projects/api-developmet/Ticketmaster-API-Dashboard-Integration
+https://www.freelancer.com/projects/app-development/Rewards-App-Admin-Panel
+https://www.freelancer.com/projects/data-visualization/Restaurant-Sales-Reporting-Dashboard
+https://www.freelancer.com/projects/woocommerce/WordPress-WooCommerce-Store-with-Video
+https://www.freelancer.com/projects/amazon-ads/Amazon-KDP-Sales-Boost-Campaign
+https://www.freelancer.com/projects/web-development/Records-Document-Platform
