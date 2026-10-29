@@ -241,3 +241,9 @@ https://www.freelancer.com/projects/python/Client-Usage-Tracking-Tool
 https://www.freelancer.com/projects/unity/Unity-Developer-for-Golf-Game
 https://www.freelancer.com/projects/article-writing/Global-Peace-Love-Manifesto
 https://www.freelancer.com/projects/photography/Event-Videography-Photography-Package
+https://www.freelancer.com/projects/web-development/Personal-Blog-with-Social-Integration-40792414
+https://www.freelancer.com/projects/laravel/Senior-Laravel-Developer-for-Dashboard
+https://www.freelancer.com/projects/web-design/Fishing-Camping-Website-Showcase
+https://www.freelancer.com/projects/web-development/Print-Quantity-Control-System
+https://www.freelancer.com/projects/html/Shopify-Home-Services-Website-Developer
+https://www.freelancer.com/projects/nodejs/Smart-kitchen-rack
