@@ -53,6 +53,15 @@ NVIDIA_API_KEY   = os.environ.get('NVIDIA_API_KEY', '')
 TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 FREELANCER_TOKEN = os.environ.get('FREELANCER_TOKEN', '')
+FREELANCER_USER_ID = os.environ.get('FREELANCER_USER_ID', '')
+
+# --- Auto-aplicar a Freelancer.com ---
+# AUTO_BID=1  -> envia la oferta SOLO (gasta tus bids del mes). Default: 0 = modo revision
+#               (manda la propuesta a Telegram para que apliques tu).
+# Requiere FREELANCER_TOKEN (con permiso de bid). Solo aplica a score >= AUTO_BID_MIN.
+AUTO_BID     = os.environ.get('AUTO_BID', '0') == '1'
+AUTO_BID_MIN = int(os.environ.get('AUTO_BID_MIN', '9'))   # umbral de score para aplicar
+AUTO_BID_MAX = int(os.environ.get('AUTO_BID_MAX', '3'))   # tope de ofertas por corrida
 
 # Cadena de IA: se intenta en orden. El 1ro con key que responda gana.
 # Si uno se satura (rate limit), se desactiva por esta corrida y se pasa al siguiente.
@@ -231,18 +240,34 @@ def recolectar(seen):
     # 8. Freelancer.com  (el endpoint de proyectos activos es PUBLICO; el token solo sube limites)
     fl_headers = {'User-Agent':UA}
     if FREELANCER_TOKEN: fl_headers['freelancer-oauth-v1'] = FREELANCER_TOKEN
-    for kw in ['dashboard','power bi','php','wordpress','data analysis','laravel','python','excel']:
+    for kw in ['dashboard','wordpress','data analysis','laravel']:
         try:
             r = requests.get('https://www.freelancer.com/api/projects/0.1/projects/active/',
-                params={'query':kw,'limit':25,'job_details':'true','full_description':'true'},
+                params={'query':kw,'limit':12,'job_details':'true','full_description':'true'},
                 headers=fl_headers, timeout=25).json()
             for p in (r.get('result',{}).get('projects') or []):
                 b = p.get('budget',{}) or {}
+                cur = (p.get('currency') or {}).get('code','')
                 push({'tipo':'freelance','fuente':'Freelancer.com','titulo':p.get('title',''),'empresa':'',
                       'descripcion':(p.get('description','') or '')[:1200],
-                      'presupuesto':f"{b.get('minimum','?')}-{b.get('maximum','?')} {(p.get('currency') or {}).get('code','')}",
-                      'url':'https://www.freelancer.com/projects/'+(p.get('seo_url',''))})
+                      'presupuesto':f"{b.get('minimum','?')}-{b.get('maximum','?')} {cur}",
+                      'url':'https://www.freelancer.com/projects/'+(p.get('seo_url','')),
+                      # Datos extra para auto-aplicar (no van al CSV)
+                      'fl_id':p.get('id'), 'fl_min':b.get('minimum'), 'fl_max':b.get('maximum'), 'fl_cur':cur})
         except Exception as e: print('Freelancer:', e)
+
+    # 12. Himalayas (empleo remoto, API publica) -> mas variedad de empleo
+    try:
+        r = get_json('https://himalayas.app/jobs/api?limit=100')
+        for j in (r.get('jobs') or []):
+            blob = f"{j.get('title','')} {j.get('description','')} {' '.join(j.get('categories',[]) or [])}"
+            if not match_kw(blob): continue
+            push({'tipo':'empleo','fuente':'Himalayas','titulo':j.get('title',''),
+                  'empresa':j.get('companyName',''),
+                  'descripcion':clean(j.get('description',''))[:1200],
+                  'presupuesto':(f"{j.get('minSalary')}-{j.get('maxSalary')} USD" if j.get('minSalary') else ''),
+                  'url':j.get('applicationLink') or j.get('guid') or ''})
+    except Exception as e: print('Himalayas:', e)
 
     # 9. Torre.co (LatAm)
     for kw in ['desarrollador web','analista de datos','power bi','php','laravel']:
@@ -311,12 +336,12 @@ def _es_rate_limit(e):
 
 class RateLimit(Exception): pass
 
-def _call_openai(p, j):
+def _raw_openai(p, system, user, max_tokens=600):
     r = requests.post(p['url'],
         headers={'Content-Type':'application/json','Authorization':'Bearer '+p['key']},
-        json={'model':p['model'],'temperature':0.2,'max_tokens':600,
+        json={'model':p['model'],'temperature':0.3,'max_tokens':max_tokens,
               'response_format':{'type':'json_object'},
-              'messages':[{'role':'system','content':SYSTEM},{'role':'user','content':user_msg(j)}]},
+              'messages':[{'role':'system','content':system},{'role':'user','content':user}]},
         timeout=45)
     if r.status_code == 429: raise RateLimit('429')
     data = r.json()
@@ -326,14 +351,14 @@ def _call_openai(p, j):
         raise RuntimeError(msg[:200])
     txt = (((data.get('choices') or [{}])[0]).get('message') or {}).get('content')
     if not txt: raise RuntimeError('sin texto')
-    return parse_score(txt)
+    return txt
 
-def _call_gemini(p, j):
+def _raw_gemini(p, system, user, max_tokens=600):
     r = requests.post(p['url'],
         headers={'Content-Type':'application/json','x-goog-api-key':p['key']},
-        json={'systemInstruction':{'parts':[{'text':SYSTEM}]},
-              'contents':[{'role':'user','parts':[{'text':user_msg(j)}]}],
-              'generationConfig':{'temperature':0.2,'maxOutputTokens':600,'responseMimeType':'application/json'}},
+        json={'systemInstruction':{'parts':[{'text':system}]},
+              'contents':[{'role':'user','parts':[{'text':user}]}],
+              'generationConfig':{'temperature':0.3,'maxOutputTokens':max_tokens,'responseMimeType':'application/json'}},
         timeout=45)
     if r.status_code == 429: raise RateLimit('429')
     data = r.json()
@@ -345,22 +370,107 @@ def _call_gemini(p, j):
     parts = ((cand.get('content') or {}).get('parts') or [{}])
     txt = parts[0].get('text')
     if not txt: raise RuntimeError('sin texto')
-    return parse_score(txt)
+    return txt
 
-def calificar(j):
+def ai_json(system, user, max_tokens=600):
+    """Llama la cadena de proveedores (con failover) y devuelve el texto JSON crudo."""
     for p in PROVIDERS:
         if not p['key'] or p['name'] in AGOTADOS:
             continue
         try:
-            s = (_call_gemini if p['kind']=='gemini' else _call_openai)(p, j)
-            s['motor'] = p['name']
-            return s
+            fn = _raw_gemini if p['kind']=='gemini' else _raw_openai
+            return fn(p, system, user, max_tokens), p['name']
         except RateLimit as e:
             print(f"{p['name']} saturado (se desactiva esta corrida): {str(e)[:120]}")
             AGOTADOS.add(p['name'])
         except Exception as e:
             print(f"{p['name']} fail: {str(e)[:150]}")
+    return None, 'ninguno'
+
+def calificar(j):
+    txt, motor = ai_json(SYSTEM, user_msg(j))
+    if motor != 'ninguno':
+        try:
+            s = parse_score(txt); s['motor'] = motor; return s
+        except Exception as e:
+            print('parse score fail:', str(e)[:120])
     return {'score':0,'motivo':'sin motor de IA disponible','pitch':'','motor':'ninguno'}
+
+# ============================================================
+#  AUTO-APLICAR A FREELANCER.COM  (opt-in, con topes)
+# ============================================================
+PROP_SYSTEM = (
+    "Eres Frank (Francisco Quinonez), desarrollador y analista de datos colombiano con experiencia "
+    "en desarrollo web (WordPress, PHP, Laravel), dashboards y analisis de datos (Power BI, SQL, Python) "
+    "y automatizacion (n8n). Escribe la propuesta para una oferta de Freelancer.com, en el idioma del anuncio, "
+    "en primera persona, concreta y creible, mencionando algo especifico del proyecto y como lo resolverias. "
+    "Nada de relleno generico. Devuelve SOLO JSON con llaves: amount (numero, monto a cobrar dentro del "
+    "presupuesto dado), period (entero, dias de entrega), proposal (string, 4-6 frases)."
+)
+
+def generar_propuesta(lead):
+    pres = f"{lead.get('fl_min','?')}-{lead.get('fl_max','?')} {lead.get('fl_cur','')}"
+    user = (f"TITULO: {lead['titulo']}\nPRESUPUESTO (min-max moneda): {pres}\n"
+            f"DESCRIPCION: {lead['descripcion']}")
+    txt, motor = ai_json(PROP_SYSTEM, user, max_tokens=700)
+    if motor == 'ninguno' or not txt: return None
+    try:
+        c = txt.replace('```json','').replace('```','')
+        m = re.search(r'\{.*\}', c, re.S)
+        p = json.loads(m.group(0) if m else c)
+        amount = float(p.get('amount') or lead.get('fl_min') or 0)
+        period = int(p.get('period') or 7)
+        proposal = (p.get('proposal') or '').strip()
+        if not proposal: return None
+        # Encajar el monto dentro del presupuesto si viene fuera de rango.
+        lo, hi = lead.get('fl_min'), lead.get('fl_max')
+        if lo and amount < lo: amount = lo
+        if hi and amount > hi: amount = hi
+        return {'amount':round(amount,2),'period':max(1,period),'proposal':proposal}
+    except Exception as e:
+        print('propuesta parse fail:', str(e)[:120]); return None
+
+_FL_BIDDER_ID = None
+def fl_bidder_id():
+    global _FL_BIDDER_ID
+    if _FL_BIDDER_ID: return _FL_BIDDER_ID
+    if FREELANCER_USER_ID: _FL_BIDDER_ID = str(FREELANCER_USER_ID); return _FL_BIDDER_ID
+    try:
+        r = get_json('https://www.freelancer.com/api/users/0.1/self/',
+                     headers={'freelancer-oauth-v1':FREELANCER_TOKEN})
+        _FL_BIDDER_ID = str((r.get('result') or {}).get('id') or '')
+    except Exception as e:
+        print('fl self id fail:', str(e)[:120])
+    return _FL_BIDDER_ID
+
+def fl_enviar_bid(lead, prop):
+    """Envia la oferta real a Freelancer.com. Devuelve True si quedo registrada."""
+    bidder = fl_bidder_id()
+    if not (bidder and lead.get('fl_id')): return False
+    try:
+        r = requests.post('https://www.freelancer.com/api/projects/0.1/bids/',
+            headers={'freelancer-oauth-v1':FREELANCER_TOKEN,'Content-Type':'application/json','User-Agent':UA},
+            json={'project_id':lead['fl_id'],'bidder_id':int(bidder),
+                  'amount':prop['amount'],'period':prop['period'],
+                  'milestone_percentage':50,'description':prop['proposal']},
+            timeout=30).json()
+        if r.get('status') == 'success' or (r.get('result') or {}).get('id'):
+            return True
+        print('bid rechazado:', json.dumps(r)[:200]); return False
+    except Exception as e:
+        print('bid fail:', str(e)[:150]); return False
+
+def avisar_propuesta(lead, prop, enviada):
+    if not (TELEGRAM_TOKEN and TELEGRAM_CHAT_ID): return
+    estado = "✅ *APLICADO automaticamente*" if enviada else "📝 *Propuesta lista para revisar*"
+    msg = (f"{estado}  (score {lead['score']}/10)\n\n*{lead['titulo']}*\n"
+           f"💰 Oferta: {prop['amount']} {lead.get('fl_cur','')} · {prop['period']} dias\n\n"
+           f"{prop['proposal']}\n\n{lead['url']}")
+    try:
+        requests.post(f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',
+            json={'chat_id':TELEGRAM_CHAT_ID,'text':msg,'parse_mode':'Markdown','disable_web_page_preview':True},
+            timeout=20)
+    except Exception as e: print('Telegram propuesta:', e)
 
 # ============================================================
 #  TELEGRAM
@@ -386,21 +496,27 @@ def main():
     nuevos = recolectar(seen)
     print(f"Leads nuevos encontrados: {len(nuevos)}")
 
-    # Tope por corrida BALANCEADO por categoria: asi el empleo (que llega en masa)
-    # no se come todo el cupo y el freelance nunca se procesa.
-    # Los que sobran quedan sin marcar -> se procesan en la proxima corrida (cada 2h).
-    free = [x for x in nuevos if x['tipo'] == 'freelance']
-    emp  = [x for x in nuevos if x['tipo'] == 'empleo']
-    mitad = MAX_POR_CORRIDA // 2
-    por_procesar = free[:mitad] + emp[:mitad]
-    # Si una categoria trae menos que su mitad, rellenar con la otra hasta el tope.
-    resto = MAX_POR_CORRIDA - len(por_procesar)
-    if resto > 0:
-        por_procesar += free[mitad:mitad+resto] + emp[mitad:mitad+resto]
-    por_procesar = por_procesar[:MAX_POR_CORRIDA]
-    print(f"Encontrados: {len(free)} freelance, {len(emp)} empleo. Procesando {len(por_procesar)} este turno.")
+    # Seleccion ROUND-ROBIN por fuente: toma 1 de cada fuente, luego el 2o de cada una, etc.
+    # Asi ninguna fuente (p.ej. Freelancer.com) inunda el cupo y entra variedad real.
+    from collections import OrderedDict
+    por_fuente = OrderedDict()
+    for x in nuevos:
+        por_fuente.setdefault(x['fuente'], []).append(x)
+    por_procesar, i = [], 0
+    while len(por_procesar) < MAX_POR_CORRIDA:
+        avanzo = False
+        for lst in por_fuente.values():
+            if i < len(lst):
+                por_procesar.append(lst[i]); avanzo = True
+                if len(por_procesar) >= MAX_POR_CORRIDA: break
+        if not avanzo: break
+        i += 1
+    from collections import Counter
+    print(f"Encontrados por fuente: {dict(Counter(x['fuente'] for x in nuevos))}")
+    print(f"Procesando {len(por_procesar)} este turno (round-robin por fuente).")
 
     guardados = 0
+    bids_hechos = 0
     nuevas_urls = []
     filas = []
     ahora = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-5))).strftime('%Y-%m-%d %H:%M')
@@ -419,6 +535,17 @@ def main():
         if res['score'] >= SCORE_AVISAR:
             avisar(lead)
 
+        # --- Auto-aplicar a Freelancer.com (solo ofertas de esa fuente con buen score) ---
+        if (FREELANCER_TOKEN and lead.get('fuente') == 'Freelancer.com'
+                and lead.get('fl_id') and res['score'] >= AUTO_BID_MIN
+                and bids_hechos < AUTO_BID_MAX):
+            prop = generar_propuesta(lead)
+            if prop:
+                enviada = fl_enviar_bid(lead, prop) if AUTO_BID else False
+                avisar_propuesta(lead, prop, enviada)
+                if enviada: bids_hechos += 1
+                time.sleep(PAUSA_IA_S)
+
     # Guardar CSV (append, crea cabecera si no existe)
     cols = ['fecha_detectado','tipo','fuente','titulo','empresa','presupuesto','score','motivo','pitch','motor','url','estado']
     nuevo_csv = not CSV_FILE.exists()
@@ -432,6 +559,9 @@ def main():
         for u in nuevas_urls: f.write(u+'\n')
 
     print(f"Guardados en CSV (score>={SCORE_GUARDAR}): {guardados}")
+    if FREELANCER_TOKEN:
+        modo = 'aplicadas' if AUTO_BID else 'preparadas para revisar'
+        print(f"Propuestas Freelancer {modo} esta corrida: {bids_hechos if AUTO_BID else 'segun Telegram'}")
 
 if __name__ == '__main__':
     main()

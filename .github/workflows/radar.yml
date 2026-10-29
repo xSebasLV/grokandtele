@@ -33,7 +33,11 @@ jobs:
           NVIDIA_API_KEY:   ${{ secrets.NVIDIA_API_KEY }}
           TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          FREELANCER_TOKEN: ${{ secrets.FREELANCER_TOKEN }}
+          FREELANCER_TOKEN:   ${{ secrets.FREELANCER_TOKEN }}
+          FREELANCER_USER_ID: ${{ secrets.FREELANCER_USER_ID }}
+          AUTO_BID:     ${{ secrets.AUTO_BID }}
+          AUTO_BID_MIN: ${{ secrets.AUTO_BID_MIN }}
+          AUTO_BID_MAX: ${{ secrets.AUTO_BID_MAX }}
         run: python radar.py
 
       - name: Guardar resultados (dedup + CSV)
