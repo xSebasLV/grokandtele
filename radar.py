@@ -59,9 +59,15 @@ FREELANCER_USER_ID = os.environ.get('FREELANCER_USER_ID', '')
 # AUTO_BID=1  -> envia la oferta SOLO (gasta tus bids del mes). Default: 0 = modo revision
 #               (manda la propuesta a Telegram para que apliques tu).
 # Requiere FREELANCER_TOKEN (con permiso de bid). Solo aplica a score >= AUTO_BID_MIN.
-AUTO_BID     = os.environ.get('AUTO_BID', '0') == '1'
-AUTO_BID_MIN = int(os.environ.get('AUTO_BID_MIN', '9'))   # umbral de score para aplicar
-AUTO_BID_MAX = int(os.environ.get('AUTO_BID_MAX', '3'))   # tope de ofertas por corrida
+def _int_env(name, default):
+    # GitHub pasa "" cuando el Secret no existe -> int("") reventaria. Tolerar vacio.
+    v = (os.environ.get(name) or '').strip()
+    try: return int(v) if v else default
+    except ValueError: return default
+
+AUTO_BID     = (os.environ.get('AUTO_BID') or '').strip() == '1'
+AUTO_BID_MIN = _int_env('AUTO_BID_MIN', 9)   # umbral de score para aplicar
+AUTO_BID_MAX = _int_env('AUTO_BID_MAX', 3)   # tope de ofertas por corrida
 
 # Cadena de IA: se intenta en orden. El 1ro con key que responda gana.
 # Si uno se satura (rate limit), se desactiva por esta corrida y se pasa al siguiente.
