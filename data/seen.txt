@@ -295,3 +295,13 @@ https://jobicy.com/jobs/158324-staff-software-engineer-databases-sre-spain-remot
 https://www.arbeitnow.com/jobs/companies/auterion/forward-deployed-engineer-munich-247982
 https://weworkremotely.com/remote-jobs/vercel-software-engineer-backend
 https://www.freelancer.com/projects/mobile-app-development/Login-interface-with-firebase-php
+https://jobicy.com/jobs/158390-senior-ml-data-scientist-womens-health
+https://www.arbeitnow.com/jobs/companies/openai/manager-applied-ai-engineering-codex-munich-421206
+https://weworkremotely.com/remote-jobs/maven-clinic-client-success-manager
+https://www.freelancer.com/projects/php/Fix-Payment-Auto-Capture-Notifications
+https://himalayas.app/companies/cerio/jobs/enterprise-account-executive-texas?utm_source=api
+https://www.getonbrd.com/jobs/senior-javascript-developer-leytonmedia-santiago-d2d0
+https://jobicy.com/jobs/158377-data-scientist-music-promotion-2
+https://www.arbeitnow.com/jobs/companies/illumio/remote-sr-customer-success-advisor-176455
+https://weworkremotely.com/remote-jobs/typeform-full-stack-developer
+https://www.freelancer.com/projects/api/High-Accuracy-Quotex-Trading-Bot
